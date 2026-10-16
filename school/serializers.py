@@ -1,6 +1,7 @@
 
 from rest_framework import serializers
 
+from accounts.models import User
 from blog_api.location import LOCATION_FIELDS, LocationSerializerMixin
 from blog_api.serializer_fields import CloudinaryImageField
 
@@ -39,6 +40,33 @@ class TeacherSerializer(LocationSerializerMixin, serializers.ModelSerializer):
             "show_on_map",
             *LOCATION_FIELDS,
         ]
+
+    def validate_email(self, value):
+        if self.instance is None:
+            user = User.objects.filter(email__iexact=value).first()
+            if user:
+                if user.role != User.Role.TEACHER:
+                    raise serializers.ValidationError(
+                        "This email address already belongs to a non-teacher account."
+                    )
+                if hasattr(user, "teacher_profile"):
+                    raise serializers.ValidationError(
+                        "This account is already linked to another teacher."
+                    )
+        return value
+
+    def create(self, validated_data):
+        from django.db import transaction
+
+        from .services import provision_teacher_account
+
+        with transaction.atomic():
+            teacher = super().create(validated_data)
+            try:
+                provision_teacher_account(teacher)
+            except ValueError as exc:
+                raise serializers.ValidationError({"email": str(exc)}) from exc
+            return teacher
 
 
 class StudentSerializer(LocationSerializerMixin, serializers.ModelSerializer):

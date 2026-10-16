@@ -158,28 +158,52 @@ class Command(BaseCommand):
             )
         )
 
+
     def _seed_users(self, password, teachers, students):
         def make_user(email, role):
             user, created = User.objects.get_or_create(
                 email=email,
                 defaults={"role": role},
             )
-            if created:
+
+            # Ensure existing accounts have a usable password.
+            if created or not user.has_usable_password():
                 user.set_password(password)
-                user.save()
-                self.stdout.write(f"Created {role} login: {email}")
+                user.save(update_fields=["password"])
+
+                if created:
+                    self.stdout.write(
+                        self.style.SUCCESS(f"Created {role} login: {email}")
+                    )
+                else:
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"Set a password for existing account: {email}"
+                        )
+                    )
+
             return user
 
+        # Link teacher records to their login accounts.
         for email in DEMO_TEACHER_EMAILS:
             teacher = teachers[email]
-            if teacher.user_id is None:
-                teacher.user = make_user(email, User.Role.TEACHER)
+            user = make_user(email, User.Role.TEACHER)
+
+            if teacher.user_id != user.id:
+                teacher.user = user
                 teacher.save(update_fields=["user"])
 
+        # Link student records to their login accounts.
         for email in DEMO_STUDENT_EMAILS:
-            student = next(s for s in students.values() if s.email == email)
-            if student.user_id is None:
-                student.user = make_user(email, User.Role.STUDENT)
+            student = next(
+                s for s in students.values()
+                if s.email == email
+            )
+            user = make_user(email, User.Role.STUDENT)
+
+            if student.user_id != user.id:
+                student.user = user
                 student.save(update_fields=["user"])
 
+        # Ensure the editor account also has a usable password.
         make_user(DEMO_EDITOR_EMAIL, User.Role.EDITOR)

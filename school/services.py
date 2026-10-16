@@ -1,11 +1,40 @@
 """School business rules: enrolling in a course and paying for it."""
 from django.db import IntegrityError, transaction
 
+from accounts.emails import send_teacher_setup_email
 from accounts.models import User
 from payments import services as payment_services
 from payments.models import Payment
 
 from .models import Enrollment, Student
+
+
+@transaction.atomic
+def provision_teacher_account(teacher):
+    """Create or attach a teacher login and send a one-time password setup link."""
+    if teacher.user_id:
+        return teacher.user
+
+    user = User.objects.filter(email__iexact=teacher.email).first()
+    if user:
+        if user.role != User.Role.TEACHER:
+            raise ValueError("This email address already belongs to a non-teacher account.")
+        if hasattr(user, "teacher_profile"):
+            raise ValueError("This account is already linked to another teacher.")
+    else:
+        user = User(
+            email=teacher.email,
+            first_name=teacher.first_name,
+            last_name=teacher.last_name,
+            role=User.Role.TEACHER,
+        )
+        user.set_unusable_password()
+        user.save()
+
+    teacher.user = user
+    teacher.save(update_fields=["user"])
+    transaction.on_commit(lambda user=user: send_teacher_setup_email(user))
+    return user
 
 
 class EnrollmentError(Exception):

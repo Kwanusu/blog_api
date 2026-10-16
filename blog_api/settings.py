@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     'school',
     'payments',
     'corsheaders',
+    'mpesa',
 ]
 
 MIDDLEWARE = [
@@ -99,6 +100,17 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
+
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': config('DB_NAME'),
+#         'USER': config('DB_USER'),
+#         'PASSWORD': config('DB_PASS'),
+#         'HOST': config('DB_HOST'),
+#         'PORT': config('DB_PORT'),
+#     }
+# }
 
 AUTH_USER_MODEL = 'accounts.User'
 
@@ -191,6 +203,9 @@ SITE_URL = config('SITE_URL', default='http://localhost:8000')
 
 # Password reset: link opens this frontend page with ?uid=...&token=...
 PASSWORD_RESET_URL = config('PASSWORD_RESET_URL', default=f'{SITE_URL}/reset-password')
+# This should point to the React password setup/reset page. It receives uid and token
+# query parameters and submits the chosen password to /api/auth/password/reset/.
+TEACHER_SETUP_URL = config('TEACHER_SETUP_URL', default=PASSWORD_RESET_URL)
 # Reset links expire after this many seconds (default 1 hour).
 PASSWORD_RESET_TIMEOUT = config('PASSWORD_RESET_TIMEOUT', default=3600, cast=int)
 

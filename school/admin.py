@@ -1,16 +1,26 @@
 from django.contrib import admin
+from django import forms
 from django.db.models import Count, Q
 
+from accounts.models import User
+
 from .models import Course, Department, Enrollment, Student, Teacher
+from .services import provision_teacher_account
 
 admin.site.register(Department)
 
 
 @admin.register(Teacher)
 class TeacherAdmin(admin.ModelAdmin):
+    exclude = ("user",)
     list_display = ('__str__', 'department', 'email', 'show_on_map')
     list_filter = ('department', 'show_on_map')
     search_fields = ('first_name', 'last_name', 'email')
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        if not change:
+            provision_teacher_account(obj)
 
 
 @admin.register(Student)

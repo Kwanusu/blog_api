@@ -104,3 +104,68 @@ class ProtectedDeleteTests(APITestCase):
         self.assertTrue(Department.objects.filter(id=dept.id).exists())
         Teacher.objects.all().delete()
         self.assertEqual(self.client.delete(f'/api/departments/{dept.id}/').status_code, 204)
+
+
+class TeacherSetupEmailTests(APITestCase):
+    def test_admin_addition_creates_teacher_login_and_sends_setup_link(self):
+        from urllib.parse import parse_qs, urlparse
+
+        from django.core import mail
+        from django.test import override_settings
+
+        admin = User.objects.create_user('teacher-admin@x.com', 'pw-Strong-123', role='admin')
+        department = Department.objects.create(name='Languages')
+        self.client.force_authenticate(admin)
+
+        with override_settings(TEACHER_SETUP_URL='https://frontend.example.com/set-password'):
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.client.post('/api/teachers/', {
+                    'first_name': 'Ada',
+                    'last_name': 'Lovelace',
+                    'email': 'ada@school.example.com',
+                    'department': department.pk,
+                }, format='json')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        teacher = Teacher.objects.get(email='ada@school.example.com')
+        user = teacher.user
+        self.assertEqual(user.role, User.Role.TEACHER)
+        self.assertFalse(user.has_usable_password())
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [teacher.email])
+        self.assertIn('Finish your registration', mail.outbox[0].body)
+
+        link = next(part for part in mail.outbox[0].body.split() if part.startswith('https://'))
+        parsed = urlparse(link)
+        self.assertEqual(f'{parsed.scheme}://{parsed.netloc}{parsed.path}',
+                         'https://frontend.example.com/set-password')
+        query = parse_qs(parsed.query)
+        self.assertEqual(query['mode'], ['teacher-setup'])
+        response = self.client.post('/api/auth/password/reset/', {
+            'uid': query['uid'][0],
+            'token': query['token'][0],
+            'new_password': 'new-Strong-456',
+        })
+        self.assertEqual(response.status_code, 200, response.data)
+        user.refresh_from_db()
+        self.assertTrue(user.check_password('new-Strong-456'))
+
+    def test_updating_teacher_does_not_send_another_invitation(self):
+        from django.core import mail
+
+        admin = User.objects.create_user('teacher-admin2@x.com', 'pw-Strong-123', role='admin')
+        department = Department.objects.create(name='History')
+        self.client.force_authenticate(admin)
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post('/api/teachers/', {
+                'first_name': 'Grace', 'last_name': 'Hopper',
+                'email': 'grace@school.example.com', 'department': department.pk,
+            }, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(len(mail.outbox), 1)
+
+        response = self.client.patch(f"/api/teachers/{response.data['id']}/", {
+            'last_name': 'Murray Hopper',
+        }, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(mail.outbox), 1)
