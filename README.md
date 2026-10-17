@@ -146,19 +146,3 @@ Never commit `.env`; it is already in `.gitignore`.
 3. Read the tests of each app *before* its code. The test names are a plain-English list of the rules.
 4. Try the "Exercises" at the end of every app README.
 
----
-
-## 6. What changed after the code review
-
-Every finding in [`REVIEW.md`](REVIEW.md) has been fixed and is marked *Done* there, with the tests that protect it.
-Changed code carries comments starting with **"Review fix …"** that explain *why* the change was made, so you can
-search the project for `Review fix` to see them all. New things to know about:
-
-* `.env.example` — the list of settings, safe to commit; copy it to `.env`.
-* `docs/lessons/` — code from earlier lessons kept for study (the original `APIView` blog API and the first M-Pesa version).
-* `ci/github-actions-ci.yml` — a ready-to-use GitHub Actions workflow (move it to `.github/workflows/`).
-* `blog_api/settings_test.py`, `blog_api/schema.py`, `mpesa/throttles.py` — small new modules explained in the app READMEs.
-
-> **Instructor note:** a review of the project (what is complete, what could be tighter, with evidence) is in
-> [`REVIEW.md`](REVIEW.md). It is written for the teacher; share it with students when you are ready to
-> discuss refactoring.

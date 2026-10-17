@@ -35,6 +35,11 @@ ALLOWED_HOSTS = config(
     cast=lambda v: [h.strip() for h in v.split(',') if h.strip()],
 )
 
+# Render sets RENDER_EXTERNAL_HOSTNAME (e.g. blog-api.onrender.com) on every web service.
+RENDER_EXTERNAL_HOSTNAME = config('RENDER_EXTERNAL_HOSTNAME', default='')
+if RENDER_EXTERNAL_HOSTNAME:
+    ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
+
 
 # Application definition
 

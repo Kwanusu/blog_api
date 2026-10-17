@@ -1,0 +1,90 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# In the Render dashboard choose New > Blueprint, pick this repo, and Render creates the web service
+# and the PostgreSQL database below. Variables marked "sync: false" are prompted for on first setup
+# and are never stored in git.
+
+databases:
+  - name: blog-api-db
+    plan: free
+    databaseName: blog_api
+    user: blog_api
+
+services:
+  - type: web
+    name: blog-api
+    runtime: python
+    plan: free
+    region: frankfurt
+    branch: main
+    buildCommand: bash build.sh
+    startCommand: gunicorn blog_api.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 60
+    healthCheckPath: /admin/login/
+    # GitHub Actions triggers the deploy (via the deploy hook) only after the tests pass,
+    # so Render's own auto-deploy on push is switched off to avoid double deploys.
+    autoDeployTrigger: "off"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "False"
+      - key: DB_BACKEND
+        value: postgres
+      - key: DATABASE_URL
+        fromDatabase:
+          name: blog-api-db
+          property: connectionString
+      # Render terminates HTTPS at its proxy and forwards X-Forwarded-Proto.
+      - key: BEHIND_PROXY
+        value: "True"
+      - key: SECURE_SSL_REDIRECT
+        value: "True"
+      # The *.onrender.com hostname is added automatically from RENDER_EXTERNAL_HOSTNAME;
+      # list any custom domains here.
+      - key: ALLOWED_HOSTS
+        value: localhost
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: SITE_URL
+        sync: false
+      - key: PASSWORD_RESET_URL
+        sync: false
+      - key: TEACHER_SETUP_URL
+        sync: false
+      - key: LOG_LEVEL
+        value: INFO
+      # Email
+      - key: EMAIL_HOST
+        sync: false
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false
+      # Cloudinary
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      # Google
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      # M-Pesa ("simulate" is refused when DEBUG is off, so production uses sandbox or production)
+      - key: MPESA_ENV
+        value: sandbox
+      - key: MPESA_CONSUMER_KEY
+        sync: false
+      - key: MPESA_CONSUMER_SECRET
+        sync: false
+      - key: MPESA_PASSKEY
+        sync: false
+      - key: MPESA_CALLBACK_URL
+        sync: false
+      - key: MPESA_CALLBACK_SECRET
+        generateValue: true

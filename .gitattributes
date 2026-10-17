@@ -1,0 +1,3 @@
+# Keep shell scripts with Unix line endings even when committed from Windows,
+# otherwise Render fails with "bash\r: No such file or directory".
+*.sh text eol=lf

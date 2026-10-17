@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
 
+# Only one deploy at a time; a newer push cancels an older run still in progress on the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -29,3 +34,72 @@ jobs:
 
       - name: Run the test suite
         run: python manage.py test --settings=blog_api.settings_test
+
+  # Rehearses the Render build (build.sh) with production-like settings against PostgreSQL,
+  # so a broken migration, collectstatic or deploy setting fails here instead of on Render.
+  production-build:
+    runs-on: ubuntu-latest
+    needs: test
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: blog_api
+          POSTGRES_PASSWORD: blog_api
+          POSTGRES_DB: blog_api
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      SECRET_KEY: ci-only-production-rehearsal-key-that-is-long-enough-for-check-deploy-1234567890
+      DEBUG: 'False'
+      DB_BACKEND: postgres
+      DATABASE_URL: postgresql://blog_api:blog_api@localhost:5432/blog_api
+      ALLOWED_HOSTS: localhost
+      BEHIND_PROXY: 'True'
+      SECURE_SSL_REDIRECT: 'True'
+      MPESA_ENV: sandbox
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Run the Render build script
+        run: bash build.sh
+
+      - name: Django deployment checks
+        run: python manage.py check --deploy --fail-level ERROR
+
+      - name: Smoke test with gunicorn
+        run: |
+          gunicorn blog_api.wsgi:application --bind 127.0.0.1:8000 --daemon
+          sleep 3
+          curl --fail --silent --show-error \
+               -H "X-Forwarded-Proto: https" -H "Host: localhost" \
+               http://127.0.0.1:8000/admin/login/ > /dev/null
+          echo "gunicorn served /admin/login/ successfully"
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [test, production-build]
+    # Deploy only from pushes to main (never from pull requests or other branches).
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - name: Trigger Render deploy
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "::error::RENDER_DEPLOY_HOOK_URL secret is not set (Render > blog-api > Settings > Deploy Hook)."
+            exit 1
+          fi
+          curl --fail --silent --show-error -X POST "$RENDER_DEPLOY_HOOK_URL"
+          echo "Render deploy triggered for commit ${GITHUB_SHA::7}"
