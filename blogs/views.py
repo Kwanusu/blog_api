@@ -1,14 +1,17 @@
 from django.db.models import Count, DecimalField, Q, Sum, Value
 from django.db.models.functions import Coalesce
+from django_filters.rest_framework import DjangoFilterBackend
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema
 from rest_framework import filters, mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
-from rest_framework.permissions import BasePermission, IsAuthenticated
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle, ScopedRateThrottle, UserRateThrottle
 from rest_framework.views import APIView
 
-from accounts.permissions import BlogPermission, ReadOnlyOrEditor
+from accounts.permissions import BlogPermission, IsWriter, ReadOnlyOrEditor
 from payments.serializers import PaymentSerializer
 from payments.services import PaymentError
 
@@ -19,6 +22,7 @@ from .serializers import (
     BlogSerializer,
     MembershipPlanSerializer,
     MembershipSerializer,
+    PUBLISHERS,
     PhoneRequestSerializer,
     TipRequestSerializer,
 )
@@ -48,17 +52,37 @@ class BlogViewSet(viewsets.ModelViewSet):
     )
     serializer_class = BlogSerializer
 
-        # 1. Enable specific filters for this viewset
-    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    # Query-string features: ?search=, ?ordering=, and exact-match filters such as ?is_premium=true.
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['is_premium', 'author']
 
-    # 2. Define which fields act as text searches
-    search_fields = ['title', 'text', 'author__first_name', 'author__last_name']
+    # Review fix A3: 'text' is deliberately NOT searchable. Searching the body would let a
+    # non-member discover words inside premium posts (a post that matches the query is proof the
+    # word is in the hidden text) even though the response only shows a teaser.
+    search_fields = ['title', 'author__first_name', 'author__last_name']
 
-    # 3. Define which fields clients are allowed to sort by
+    # Fields clients are allowed to sort by, and the default order (newest first).
     ordering_fields = ['published_date', 'created_at', 'title']
-
-    # 4. (Optional) Provide a default ordering
     ordering = ['-published_date']
+
+    def get_queryset(self):
+        """
+        Limit what each role can see (review fix A2).
+
+        * editors / admins ........ everything, including drafts
+        * authors ................. published posts plus their own drafts
+        * readers and everyone else  published posts only
+
+        Filtering here (not in the serializer) matters because ``get_object()`` uses this queryset
+        too: a draft that is hidden from the list is also a 404 on retrieve, update, delete and tip.
+        """
+        queryset = super().get_queryset()
+        user = self.request.user
+        if user.is_superuser or user.role in PUBLISHERS:
+            return queryset
+        if user.role == 'author':
+            return queryset.filter(Q(is_published=True) | Q(author__user=user))
+        return queryset.filter(is_published=True)
 
     @action(
         detail=True, methods=['post'], permission_classes=[IsAuthenticated],
@@ -108,6 +132,7 @@ class MembershipPlanViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, vi
         return Response({'payment': PaymentSerializer(payment).data}, status=status.HTTP_202_ACCEPTED)
 
 
+@extend_schema(responses=OpenApiTypes.OBJECT)
 class MembershipView(APIView):
     """Is the signed-in user a member right now, and for how long?"""
 
@@ -123,12 +148,7 @@ class MembershipView(APIView):
         })
 
 
-class IsWriter(BasePermission):
-    def has_permission(self, request, view):
-        user = request.user
-        return bool(user and user.is_authenticated and user.role in ('admin', 'editor', 'author'))
-
-
+@extend_schema(responses=OpenApiTypes.OBJECT)
 class EarningsView(APIView):
     """Tips received. Authors see theirs; editors and admins see everyone's."""
 
@@ -165,53 +185,3 @@ class EarningsView(APIView):
                 for t in tips[:10]
             ],
         })
-
-# class BlogListCreateAPIView(APIView):
-#     def get(self, request):
-#         blogs = Blog.objects.select_related('author').all()
-#         serializer = BlogSerializer(blogs, many=True)
-#         return Response(serializer.data)
-
-#     def post(self, request):
-#         serializer = BlogSerializer(data=request.data)
-#         if serializer.is_valid():
-#             try:
-#                 serializer.save()
-#                 return Response(serializer.data, status=status.HTTP_201_CREATED)
-#             except IntegrityError:
-#                 return Response({"detail": "Invalid data."}, status=status.HTTP_409_CONFLICT)
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-# class BlogDetailAPIView(APIView):
-#     def get_object(self, pk):
-#         try:
-#             return Blog.objects.get(pk=pk)
-#         except Blog.DoesNotExist:
-#             raise exceptions.NotFound(f"Blog with ID {pk} not found.")
-
-#     def get(self, request, pk):
-#         blog = self.get_object(pk)
-#         serializer = BlogSerializer(blog)
-#         return Response(serializer.data)
-
-#     def put(self, request, pk):
-#         blog = self.get_object(pk)
-#         serializer = BlogSerializer(blog, data=request.data)
-#         if serializer.is_valid():
-#             try:
-#                 serializer.save()
-#                 return Response(serializer.data)
-#             except IntegrityError:
-#                 return Response({"detail": "Invalid data."}, status=status.HTTP_409_CONFLICT)
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-#     def delete(self, request, pk):
-#         blog = self.get_object(pk)
-#         blog.delete()
-#         return Response(status=status.HTTP_204_NO_CONTENT)
-
-# class AuthorListAPIView(APIView):
-#     def get(self, request):
-#         authors = Author.objects.all()
-#         serializer = AuthorSerializer(authors, many=True)
-#         return Response(serializer.data)

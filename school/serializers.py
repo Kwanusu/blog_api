@@ -1,4 +1,6 @@
 
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from accounts.models import User
@@ -68,6 +70,27 @@ class TeacherSerializer(LocationSerializerMixin, serializers.ModelSerializer):
                 raise serializers.ValidationError({"email": str(exc)}) from exc
             return teacher
 
+    def update(self, instance, validated_data):
+        """
+        Keep the linked login in step with the teacher record (review fix: limitation in school/README).
+        Previously changing a teacher's email left the login on the old address, so password-reset
+        and invitation emails went to the wrong inbox.
+        """
+        from django.db import transaction
+
+        new_email = validated_data.get("email")
+        with transaction.atomic():
+            teacher = super().update(instance, validated_data)
+            user = teacher.user
+            if user and new_email and new_email.lower() != user.email.lower():
+                if User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
+                    raise serializers.ValidationError(
+                        {"email": "Another account already uses this email address."}
+                    )
+                user.email = new_email
+                user.save(update_fields=["email"])
+        return teacher
+
 
 class StudentSerializer(LocationSerializerMixin, serializers.ModelSerializer):
     class Meta:
@@ -86,17 +109,18 @@ class StudentSerializer(LocationSerializerMixin, serializers.ModelSerializer):
 
     # A student's address is personal data: only managers and the student themself get it.
     PRIVATE = ("address", "latitude", "longitude", "place_id")
+    # Review fix B5: date of birth and phone number are also personal data. Teachers need a
+    # student's name, admission number and email to do their job, but not these two fields.
+    MANAGER_OR_SELF_ONLY = ("date_of_birth", "phone")
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        allowed = bool(
-            user and user.is_authenticated
-            and (user.role in MANAGERS or instance.user_id == user.id)
-        )
-        if not allowed:
-            for field in self.PRIVATE:
+        is_manager = bool(user and user.is_authenticated and user.role in MANAGERS)
+        is_self = bool(user and user.is_authenticated and instance.user_id == user.id)
+        if not (is_manager or is_self):
+            for field in self.PRIVATE + self.MANAGER_OR_SELF_ONLY:
                 data.pop(field, None)
         return data
 
@@ -135,7 +159,7 @@ class CourseSerializer(LocationSerializerMixin, serializers.ModelSerializer):
             "my_enrollment",
         ]
 
-    def get_teacher_names(self, obj):
+    def get_teacher_names(self, obj) -> list[str]:
         return [
             str(teacher)
             for teacher in obj.teachers.all()
@@ -146,14 +170,15 @@ class CourseSerializer(LocationSerializerMixin, serializers.ModelSerializer):
         taken = getattr(obj, "taken", None)
         return obj.taken_seats if taken is None else taken
 
-    def get_seats_left(self, obj):
+    def get_seats_left(self, obj) -> int | None:
         if obj.capacity is None:
             return None
         return max(obj.capacity - self._taken(obj), 0)
 
-    def get_is_full(self, obj):
+    def get_is_full(self, obj) -> bool:
         return obj.capacity is not None and self._taken(obj) >= obj.capacity
 
+    @extend_schema_field(OpenApiTypes.OBJECT)
     def get_my_enrollment(self, obj):
         """The signed-in user's enrollment in this course as {id, status} (or null), supplied by the view."""
         mine = self.context.get("my_enrollments")

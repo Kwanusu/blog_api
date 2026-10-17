@@ -1,7 +1,6 @@
 """Memberships and tips: the two things readers pay for with M-Pesa."""
 from datetime import timedelta
 
-from django.db import transaction
 from django.utils import timezone
 
 from payments import services as payment_services
@@ -12,6 +11,9 @@ from .models import Membership, Tip
 
 MIN_TIP = 10
 MAX_TIP = 70000   # comfortably under M-Pesa's per-transaction ceiling
+# Two layers of double-click protection are intentional: this one stops a second *purchase record*
+# (Membership/Tip) from being created, while payments.services.initiate_stk stops a second *M-Pesa
+# prompt* for the same reference. Both use the same 60-second window.
 DUPLICATE_WINDOW = timedelta(seconds=60)
 
 
@@ -35,8 +37,8 @@ def start_membership(user, plan, phone):
     if recent:
         return recent.payment
 
-    with transaction.atomic():
-        membership = Membership.objects.create(user=user, plan=plan)
+    # A single INSERT is already atomic, so no explicit transaction is needed here (review fix C).
+    membership = Membership.objects.create(user=user, plan=plan)
     try:
         payment = payment_services.initiate_stk(
             user=user, phone=phone, amount=plan.price, purpose=Payment.Purpose.MEMBERSHIP,

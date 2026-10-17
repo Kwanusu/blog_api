@@ -1,212 +1,159 @@
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from .mpesa_utils import initiate_stk_push, get_mpesa_access_token
-from django.http import Http404
-from django.shortcuts import render
-from rest_framework.views import APIView
-from rest_framework import status
-from .models import *
-from .serializers import *
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
+"""
+Location API (create, list, read, update and delete places) with Google Geocoding.
+
+Review history (items A4 and B7)
+--------------------------------
+* The first-lesson M-Pesa views (``/api/pay/`` and ``/api/pay/callback/``) were removed from this module.
+  They could not work (the callback demanded a JWT, so Safaricom got ``401``) and are fully replaced by
+  the ``payments`` app. The original code is kept for study in ``docs/lessons/mpesa_first_version.md``.
+* Access is now restricted: anyone signed in may *read* locations, but only editors and admins may
+  create, change or delete them (previously any signed-in reader could, and spend the Google quota).
+* Calls to Google have a timeout, failures are logged (no ``print``), and settings are read from
+  ``django.conf.settings`` instead of importing the settings module directly.
+* ``GET`` no longer writes to the database; the old "heal missing coordinates on read" side effect was removed.
+* Duplicate address-parsing code was collapsed into ``_components_from``.
+"""
+import logging
+
 import requests
-from blog_api.settings import GOOGLE_MAPS_API_KEY
+from django.conf import settings
+from drf_spectacular.utils import extend_schema
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.response import Response
 
-@api_view(['POST'])
-def pay_with_mpesa(request):
-    phone_number = request.data.get('phone_number') # Format: 2547XXXXXXXX
-    amount = request.data.get('amount')
-    
-    if not phone_number or not amount:
-        return Response({"error": "Phone number and amount are required."}, status=400)
+from accounts.permissions import ReadOnlyOrEditor
 
-    # Initiate payment
-    response = initiate_stk_push(
-        phone_number=phone_number,
-        amount=amount,
-        account_reference="Django Shop",
-        transaction_desc="Payment for Order #1234"
-    )
+from .models import Location
+from .serializers import LocationSerializer
+from .throttles import GeocodingThrottle
 
-    return Response(response)
+logger = logging.getLogger(__name__)
 
-@api_view(['POST'])
-def mpesa_callback(request):
-    # Safaricom sends the transaction results here asynchronously
-    data = request.data
-    
-    # Examine the ResultCode
-    result_code = data.get('Body', {}).get('stkCallback', {}).get('ResultCode')
-    
-    if result_code == 0:
-        # Transaction was successful, parse the receipt and update DB
-        print("Payment successful!")
-        callback_metadata = data['Body']['stkCallback']['CallbackMetadata']['Item']
-        for item in callback_metadata:
-            if item['Name'] == 'MpesaReceiptNumber':
-                receipt = item.get('Value')
-                print(f"Receipt: {receipt}")
-    else:
-        print("Payment failed or cancelled by user.")
+GEOCODE_URL = 'https://maps.googleapis.com/maps/api/geocode/json'
+GEOCODE_TIMEOUT = 10   # seconds; a slow Google must not tie up a worker indefinitely
 
-    # Always return a 200 response to Daraja so they stop retrying
-    return Response({"ResultCode": 0, "ResultDesc": "Accepted"})
 
+def _geocode(**params):
+    """
+    Call Google's Geocoding API and return the first result, or ``None`` if nothing was found or
+    Google could not be reached. Pass ``address=...`` (forward) or ``latlng=...`` (reverse).
+    """
+    try:
+        response = requests.get(
+            GEOCODE_URL,
+            params={**params, 'key': settings.GOOGLE_MAPS_API_KEY},
+            timeout=GEOCODE_TIMEOUT,
+        )
+        data = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning('Geocoding request failed: %s', exc)
+        return None
+    if data.get('status') == 'OK' and data.get('results'):
+        return data['results'][0]
+    return None
 
 
 def fetch_address_details(address):
-    base_url = 'https://maps.googleapis.com/maps/api/geocode/json'
-    api_key = GOOGLE_MAPS_API_KEY 
+    """Forward geocoding: address text -> Google result (coordinates and components)."""
+    return _geocode(address=address)
 
-    params = {
-        'address': address,
-        'key': api_key
-    }
-
-    try:
-        response = requests.get(base_url, params=params)
-        data = response.json()
-
-        if data['status'] == 'OK':
-            return data['results'][0]
-        else:
-            return None
-    except requests.exceptions.RequestException as e:
-        return None
 
 def fetch_geocode_details(latitude, longitude):
-    base_url = 'https://maps.googleapis.com/maps/api/geocode/json'
-    api_key = GOOGLE_MAPS_API_KEY 
+    """Reverse geocoding: coordinates -> Google result (formatted address and components)."""
+    return _geocode(latlng=f'{latitude},{longitude}')
 
-    params = {
-        'latlng': f'{latitude},{longitude}',
-        'key': api_key
-    }
 
+def _components_from(result, town='', county='', country=''):
+    """
+    Pull town, county and country out of a Google result. Values already supplied by the caller win,
+    so a client that sends its own ``town`` is never overwritten.
+    """
+    for component in result.get('address_components', []):
+        types = component.get('types', [])
+        if 'locality' in types and not town:
+            town = component.get('long_name', '')
+        elif 'administrative_area_level_1' in types and not county:
+            county = component.get('long_name', '')
+        elif 'country' in types and not country:
+            country = component.get('long_name', '')
+    return town, county, country
+
+
+def _bad_request(message):
+    return Response({'error': message}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _parse_coordinates(latitude, longitude):
+    """Return ``(lat, lng, error_message)``; ``error_message`` is ``None`` when the pair is valid."""
     try:
-        response = requests.get(base_url, params=params)
-        data = response.json()
+        latitude, longitude = float(latitude), float(longitude)
+    except (TypeError, ValueError):
+        return None, None, 'Latitude and longitude must be valid numbers.'
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return None, None, 'Latitude or longitude is outside the valid range.'
+    return latitude, longitude, None
 
-        if data['status'] == 'OK':
-            return data['results'][0]
-        else:
-            return None
-    except requests.exceptions.RequestException as e:
-        return None
- 
+
+# Explicit operation ids keep the generated API docs unambiguous (list vs. read-one both used to be "locations_retrieve").
+@extend_schema(methods=['GET'], operation_id='locations_list', responses=LocationSerializer(many=True))
+@extend_schema(methods=['POST'], operation_id='locations_create', request=LocationSerializer, responses=LocationSerializer)
 @api_view(['GET', 'POST'])
+@permission_classes([ReadOnlyOrEditor])
+@throttle_classes([GeocodingThrottle])
 def location_list_create_api_view(request):
     if request.method == 'GET':
-        locations = Location.objects.all()
-        serializer = LocationSerializer(locations, many=True)
-        return Response(serializer.data)
+        # Ordered and paginated like every other list in the API (review fix B7); the old version
+        # returned every row in one response.
+        paginator = PageNumberPagination()
+        page = paginator.paginate_queryset(Location.objects.order_by('id'), request)
+        return paginator.get_paginated_response(LocationSerializer(page, many=True).data)
 
     address = request.data.get('address')
     latitude = request.data.get('latitude')
     longitude = request.data.get('longitude')
-
-    # Accept supplied location details
     town = request.data.get('town', '')
     county = request.data.get('county', '')
     country = request.data.get('country', '')
 
     if not address and (latitude is None or longitude is None):
-        return Response(
-            {
-                'error': 'Provide an address or both latitude and longitude.'
-            },
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        return _bad_request('Provide an address or both latitude and longitude.')
 
-    # If coordinates are supplied, use them directly.
-    # Geocode only when location details are missing.
     if latitude is not None and longitude is not None:
-        try:
-            latitude = float(latitude)
-            longitude = float(longitude)
-        except (TypeError, ValueError):
-            return Response(
-                {'error': 'Latitude and longitude must be valid numbers.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
-            return Response(
-                {'error': 'Latitude or longitude is outside the valid range.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
+        # Coordinates supplied: validate them, and geocode only if some detail is still missing.
+        latitude, longitude, error = _parse_coordinates(latitude, longitude)
+        if error:
+            return _bad_request(error)
         if not all([town, county, country, address]):
-            geocode_details = fetch_geocode_details(latitude, longitude)
-
-            if not geocode_details:
-                return Response(
-                    {'error': 'Could not retrieve location details from Google Maps.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            address = address or geocode_details.get('formatted_address', '')
-
-            for component in geocode_details.get('address_components', []):
-                types = component.get('types', [])
-
-                if 'locality' in types and not town:
-                    town = component.get('long_name', '')
-                elif 'administrative_area_level_1' in types and not county:
-                    county = component.get('long_name', '')
-                elif 'country' in types and not country:
-                    country = component.get('long_name', '')
-
+            details = fetch_geocode_details(latitude, longitude)
+            if not details:
+                return _bad_request('Could not retrieve location details from Google Maps.')
+            address = address or details.get('formatted_address', '')
+            town, county, country = _components_from(details, town, county, country)
     else:
-        # Address only: look up its coordinates and address components.
-        address_details = fetch_address_details(address)
+        # Address only: look up its coordinates and components.
+        details = fetch_address_details(address)
+        if not details:
+            return _bad_request('Address not found or Google Maps API request failed.')
+        coordinates = details.get('geometry', {}).get('location', {})
+        latitude, longitude = coordinates.get('lat'), coordinates.get('lng')
+        town, county, country = _components_from(details, town, county, country)
 
-        if not address_details:
-            return Response(
-                {'error': 'Address not found or Google Maps API request failed.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        coordinates = address_details.get('geometry', {}).get('location', {})
-        latitude = coordinates.get('lat')
-        longitude = coordinates.get('lng')
-
-        for component in address_details.get('address_components', []):
-            types = component.get('types', [])
-
-            if 'locality' in types and not town:
-                town = component.get('long_name', '')
-            elif 'administrative_area_level_1' in types and not county:
-                county = component.get('long_name', '')
-            elif 'country' in types and not country:
-                country = component.get('long_name', '')
-
-    # Validate and save through the serializer.
-    serializer = LocationSerializer(
-        data={
-            'address': address,
-            'latitude': latitude,
-            'longitude': longitude,
-            'town': town,
-            'county': county,
-            'country': country,
-        },
-        context={'request': request}
-    )
-
+    serializer = LocationSerializer(data={
+        'address': address, 'latitude': latitude, 'longitude': longitude,
+        'town': town, 'county': county, 'country': country,
+    })
     if serializer.is_valid():
         serializer.save()
-        return Response(
-            serializer.data,
-            status=status.HTTP_201_CREATED
-        )
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    return Response(
-        serializer.errors,
-        status=status.HTTP_400_BAD_REQUEST
-    )
 
+@extend_schema(request=LocationSerializer, responses=LocationSerializer)
 @api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([ReadOnlyOrEditor])
+@throttle_classes([GeocodingThrottle])
 def location_retrieve_update_delete_api_view(request, pk):
     try:
         location = Location.objects.get(pk=pk)
@@ -214,87 +161,42 @@ def location_retrieve_update_delete_api_view(request, pk):
         return Response({'error': 'Location not found.'}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == 'GET':
-        if not location.latitude or not location.longitude:
-            address_details = fetch_address_details(location.address)
-            if address_details:
-                location_data = address_details.get('geometry', {}).get('location', {})
-                location.latitude = location_data.get('lat')
-                location.longitude = location_data.get('lng')
-                address_components = address_details.get('address_components', [])
-                for component in address_components:
-                    types = component.get('types', [])
-                    if 'locality' in types:
-                        location.town = component.get('long_name', "")
-                    elif 'administrative_area_level_1' in types:
-                        location.county = component.get('long_name', "")
-                    elif 'country' in types:
-                        location.country = component.get('long_name', "")
-                location.save()
+        return Response(LocationSerializer(location).data)
 
-        serializer = LocationSerializer(location)
-        return Response(serializer.data)
-
-    if request.method == 'PUT':
-        address = request.data.get('address', '')
-        latitude = request.data.get('latitude')
-        longitude = request.data.get('longitude')
-
-        if not address and not (latitude and longitude):
-            return Response({'error': 'Address or Latitude and Longitude parameters are required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        town = ""
-        county = ""
-        country = ""
-
-        if address:
-            address_details = fetch_address_details(address)
-
-            if address_details:
-                location_data = address_details.get('geometry', {}).get('location', {})
-                latitude = location_data.get('lat')
-                longitude = location_data.get('lng')
-                address_components = address_details.get('address_components', [])
-                for component in address_components:
-                    types = component.get('types', [])
-                    if 'locality' in types:
-                        town = component.get('long_name', "")
-                    elif 'administrative_area_level_1' in types:
-                        county = component.get('long_name', "")
-                    elif 'country' in types:
-                        country = component.get('long_name', "")
-            else:
-                return Response({'error': 'Location not found or API request error.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        elif latitude and longitude:
-            geocode_details = fetch_geocode_details(latitude, longitude)
-
-            if geocode_details:
-                address = geocode_details.get('formatted_address', "")
-                address_components = geocode_details.get('address_components', [])
-                for component in address_components:
-                    types = component.get('types', [])
-                    if 'locality' in types:
-                        town = component.get('long_name', "")
-                    elif 'administrative_area_level_1' in types:
-                        county = component.get('long_name', "")
-                    elif 'country' in types:
-                        country = component.get('long_name', "")
-                if not town:
-                    return Response({'error': 'Location not found in geocode details.'}, status=status.HTTP_400_BAD_REQUEST)
-            else:
-                return Response({'error': 'Location not found or API request error.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        location.address = address
-        location.latitude = latitude
-        location.longitude = longitude
-        location.town = town
-        location.county = county
-        location.country = country
-        location.save()
-
-        serializer = LocationSerializer(location)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-    elif request.method == 'DELETE':
+    if request.method == 'DELETE':
         location.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    # PUT: re-geocode from the new address, or from new coordinates.
+    address = request.data.get('address', '')
+    latitude = request.data.get('latitude')
+    longitude = request.data.get('longitude')
+    has_coordinates = latitude is not None and longitude is not None   # 0 is a valid coordinate
+
+    if not address and not has_coordinates:
+        return _bad_request('Address or Latitude and Longitude parameters are required.')
+
+    if address:
+        details = fetch_address_details(address)
+        if not details:
+            return _bad_request('Location not found or API request error.')
+        coordinates = details.get('geometry', {}).get('location', {})
+        latitude, longitude = coordinates.get('lat'), coordinates.get('lng')
+    else:
+        latitude, longitude, error = _parse_coordinates(latitude, longitude)
+        if error:
+            return _bad_request(error)
+        details = fetch_geocode_details(latitude, longitude)
+        if not details:
+            return _bad_request('Location not found or API request error.')
+        address = details.get('formatted_address', '')
+
+    town, county, country = _components_from(details)
+    if not address and not town:
+        return _bad_request('Location not found in geocode details.')
+
+    location.address = address
+    location.latitude, location.longitude = latitude, longitude
+    location.town, location.county, location.country = town, county, country
+    location.save()
+    return Response(LocationSerializer(location).data, status=status.HTTP_200_OK)

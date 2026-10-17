@@ -172,3 +172,13 @@ cython_debug/
 #.idea/
 
 # End of https://www.toptal.com/developers/gitignore/api/django
+# --- Added in the code review (items A1, B6) ---
+# Local databases and backups must never be committed (they hold users, password hashes and sessions).
+db.sqlite3*
+*.bak
+*.bak-*
+*.sqlite3
+# Output of `python manage.py collectstatic`
+staticfiles/
+# Local virtual environments
+.venv/

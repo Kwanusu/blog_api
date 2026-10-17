@@ -1,10 +1,13 @@
-from rest_framework import generics, mixins, status, viewsets
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema, inline_serializer
+from rest_framework import generics, mixins, serializers, status, viewsets
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.settings import api_settings
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
@@ -54,6 +57,7 @@ class UserViewSet(
         return UserSerializer
 
 
+@extend_schema(request=ForgotPasswordSerializer, responses=OpenApiTypes.OBJECT)
 class ForgotPasswordView(APIView):
     """Request a reset email. Always answers 200 so emails can't be enumerated."""
 
@@ -74,6 +78,7 @@ class ForgotPasswordView(APIView):
         )
 
 
+@extend_schema(request=ResetPasswordSerializer, responses=OpenApiTypes.OBJECT)
 class ResetPasswordView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [ScopedRateThrottle]
@@ -86,6 +91,7 @@ class ResetPasswordView(APIView):
         return Response({'detail': 'Password has been reset. You can now log in.'})
 
 
+@extend_schema(request=ChangePasswordSerializer, responses=OpenApiTypes.OBJECT)
 class ChangePasswordView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -96,6 +102,7 @@ class ChangePasswordView(APIView):
         return Response({'detail': 'Password changed.'}, status=status.HTTP_200_OK)
 
 
+@extend_schema(request=GoogleLoginSerializer, responses=OpenApiTypes.OBJECT)
 class GoogleLoginView(APIView):
     """
     Sign in / sign up with Google.
@@ -165,6 +172,8 @@ class RefreshView(TokenRefreshView):
     throttle_scope = 'login'
 
 
+@extend_schema(request=inline_serializer('LogoutRequest', {'refresh': serializers.CharField()}),
+               responses={204: None})
 class LogoutView(APIView):
     """Blacklists the given refresh token so it can't be used again."""
 
@@ -176,7 +185,17 @@ class LogoutView(APIView):
             return Response({'detail': 'refresh token is required.'},
                             status=status.HTTP_400_BAD_REQUEST)
         try:
-            RefreshToken(token).blacklist()
+            refresh = RefreshToken(token)
+        except TokenError:
+            return Response({'detail': 'Invalid or expired token.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        # Review fix (low): only the token's owner may revoke it. Without this check any signed-in
+        # user who obtained someone else's refresh token could log that person out.
+        if str(refresh.get(api_settings.USER_ID_CLAIM)) != str(request.user.pk):
+            return Response({'detail': 'Invalid or expired token.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            refresh.blacklist()
         except TokenError:
             return Response({'detail': 'Invalid or expired token.'},
                             status=status.HTTP_400_BAD_REQUEST)

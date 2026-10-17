@@ -27,8 +27,8 @@ class PaymentSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
-    def get_amount(self, obj):
+    def get_amount(self, obj) -> int:
         return int(obj.amount)
 
-    def get_message(self, obj):
+    def get_message(self, obj) -> str:
         return FRIENDLY.get(obj.status, '')

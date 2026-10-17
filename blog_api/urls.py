@@ -16,10 +16,16 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
+
+# API documentation. Who may open it is decided in settings.SPECTACULAR_SETTINGS['SERVE_PERMISSIONS']:
+# open while developing (DEBUG on), staff-only in production so the full endpoint list is not public.
 
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='api-docs'),
     path('api/', include('accounts.urls')),
     path('api/', include('blogs.urls')),
     path('api/', include('school.urls')),

@@ -210,3 +210,23 @@ def reconcile(payment, *, force=False):
         payload=result,
     )
     return settled or payment
+
+
+def expire_orphans():
+    """
+    Close pending payments that were never sent to Safaricom. Returns how many were closed.
+
+    ``initiate_stk`` saves the Payment *before* calling Daraja, so a crash in between (server
+    restart, killed worker) leaves a row with no ``checkout_request_id``. Reconciliation ignores
+    such rows because there is nothing to ask Daraja about, which would leave them "pending" forever
+    and, for course fees, keep a seat reserved. Nothing was charged, so they are marked failed.
+    """
+    return Payment.objects.filter(
+        status=Payment.Status.PENDING,
+        checkout_request_id__isnull=True,
+        created_at__lt=timezone.now() - GIVE_UP_AFTER,
+    ).update(
+        status=Payment.Status.FAILED,
+        result_desc='The payment request was never sent.',
+        updated_at=timezone.now(),
+    )

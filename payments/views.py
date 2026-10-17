@@ -3,6 +3,8 @@ import logging
 
 from django.conf import settings
 from django.http import Http404
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema
 from rest_framework import mixins, viewsets
 from rest_framework.exceptions import ParseError
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -18,6 +20,7 @@ logger = logging.getLogger(__name__)
 ACCEPTED = {'ResultCode': 0, 'ResultDesc': 'Accepted'}
 
 
+@extend_schema(request=OpenApiTypes.OBJECT, responses=OpenApiTypes.OBJECT)
 class MpesaCallbackView(APIView):
     """
     Safaricom posts the STK result here. Deliberately public (Safaricom has no token to send) —
@@ -47,6 +50,8 @@ class PaymentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):   # schema generation has no signed-in user
+            return Payment.objects.none()
         return Payment.objects.filter(user=self.request.user)
 
     def retrieve(self, request, *args, **kwargs):

@@ -11,7 +11,9 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
 from pathlib import Path
+
 from decouple import config
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -46,6 +48,8 @@ INSTALLED_APPS = [
     'accounts',
     'blogs',
     'rest_framework',
+    'django_filters',   # ?field=value filtering on list endpoints
+    'drf_spectacular',  # OpenAPI schema + interactive docs (/api/docs/)
     'rest_framework_simplejwt',
     'rest_framework_simplejwt.token_blacklist',
     'school',
@@ -71,6 +75,13 @@ CORS_ALLOWED_ORIGINS = config(
    cast=lambda v: [o.strip() for o in v.split(',') if o.strip()],
 )
 
+# Serves collected static files (admin CSS/JS) in production without a separate web server.
+# Added only when DEBUG is off: runserver already serves static files in development, and WhiteNoise
+# would just warn that `staticfiles/` has not been collected yet. It must sit directly after
+# SecurityMiddleware (review fix B1/B6).
+if not DEBUG:
+    MIDDLEWARE.insert(1, 'whitenoise.middleware.WhiteNoiseMiddleware')
+
 ROOT_URLCONF = 'blog_api.urls'
 
 TEMPLATES = [
@@ -94,23 +105,55 @@ WSGI_APPLICATION = 'blog_api.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
-}
+# Review fix B6: the active database is chosen from .env instead of editing this file.
+#   DB_BACKEND=sqlite    (default) a local file, zero setup
+#   DB_BACKEND=postgres  reads DATABASE_URL, e.g. postgresql://user:password@host:5432/dbname
+# It is an explicit switch (not "use DATABASE_URL whenever it exists") so a stale DATABASE_URL left in
+# .env can never silently redirect a classroom machine to a remote database. PostgreSQL also needs the
+# driver installed: pip install "psycopg[binary]".
+DB_BACKEND = config('DB_BACKEND', default='sqlite').strip().lower()
 
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.postgresql',
-#         'NAME': config('DB_NAME'),
-#         'USER': config('DB_USER'),
-#         'PASSWORD': config('DB_PASS'),
-#         'HOST': config('DB_HOST'),
-#         'PORT': config('DB_PORT'),
-#     }
-# }
+if DB_BACKEND == 'postgres':
+    from urllib.parse import unquote, urlparse
+
+    _db = urlparse(config('DATABASE_URL'))
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': _db.path.lstrip('/'),
+            'USER': unquote(_db.username or ''),
+            'PASSWORD': unquote(_db.password or ''),
+            'HOST': _db.hostname or '',
+            'PORT': _db.port or '',
+            'CONN_MAX_AGE': config('DB_CONN_MAX_AGE', default=60, cast=int),   # reuse connections
+        }
+    }
+elif DB_BACKEND == 'sqlite':
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
+else:
+    raise ImproperlyConfigured("DB_BACKEND must be 'sqlite' or 'postgres'.")
+
+# Review fix A5: one explicit primary-key type for every app. Without it, migrations generated under
+# different Django versions disagreed (AutoField vs BigAutoField) and `makemigrations` always found
+# "changes". BigAutoField is the modern default and avoids running out of ids on large tables.
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+# Cache (review fix B6)
+# Throttle counters and the cached M-Pesa access token live in the cache. The default in-memory cache
+# is private to each server process, so with several workers every process would keep its own counters
+# and a client could exceed a limit by N times. Set REDIS_URL to share the cache between workers
+# (needs: pip install redis). Locally the in-memory cache is fine.
+_redis_url = config('REDIS_URL', default='')
+if _redis_url:
+    CACHES = {'default': {'BACKEND': 'django.core.cache.backends.redis.RedisCache', 'LOCATION': _redis_url}}
+else:
+    CACHES = {'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}}
 
 AUTH_USER_MODEL = 'accounts.User'
 
@@ -126,6 +169,9 @@ REST_FRAMEWORK = {
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ],
     
+    # Generates the OpenAPI schema that drives the interactive docs at /api/docs/.
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.UserRateThrottle',
         'rest_framework.throttling.AnonRateThrottle',
@@ -138,6 +184,7 @@ REST_FRAMEWORK = {
         'social_login': '20/hour',
         'login': '10/min',
         'payments': '20/hour',   # M-Pesa prompts (enroll / subscribe / tip) per signed-in user
+        'geocoding': '60/hour',  # location create/update/delete: each may call the Google Geocoding API
     }
 }
 
@@ -177,6 +224,40 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
 STATIC_URL = 'static/'
+# Where `python manage.py collectstatic` gathers files for production (served by WhiteNoise).
+# Review fix B6: without STATIC_ROOT, collectstatic fails and the admin loses its styling in production.
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+
+# OpenAPI documentation (review item C): schema at /api/schema/, Swagger UI at /api/docs/.
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Blog, School and Payments API',
+    'DESCRIPTION': 'Teaching project: blogs with a paywall, a school, and M-Pesa payments.',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'PREPROCESSING_HOOKS': ['blog_api.schema.exclude_legacy_routes'],
+    # Open while developing; staff-only otherwise (note: the permission is evaluated by DRF, so a
+    # production reader needs a staff JWT).
+    'SERVE_PERMISSIONS': (
+        ['rest_framework.permissions.AllowAny'] if DEBUG else ['rest_framework.permissions.IsAdminUser']
+    ),
+}
+
+
+# Logging (review fix B6)
+# Everything goes to the console, which is what hosting platforms collect. Set LOG_LEVEL=DEBUG while
+# developing. Our own apps log under their module names (for example "payments.services").
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {'format': '%(asctime)s %(levelname)s %(name)s: %(message)s'},
+    },
+    'handlers': {
+        'console': {'class': 'logging.StreamHandler', 'formatter': 'standard'},
+    },
+    'root': {'handlers': ['console'], 'level': config('LOG_LEVEL', default='INFO')},
+}
 
 
 # Email

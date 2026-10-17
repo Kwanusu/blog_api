@@ -19,6 +19,16 @@ class IsEditorOrAdmin(BasePermission):
         return has_role(request.user, Role.ADMIN, Role.EDITOR)
 
 
+class IsWriter(BasePermission):
+    """Admins, editors and authors: everyone who can publish or earn from blog posts.
+
+    Moved here from ``blogs/views.py`` so every permission class lives in one place.
+    """
+
+    def has_permission(self, request, view):
+        return has_role(request.user, Role.ADMIN, Role.EDITOR, Role.AUTHOR)
+
+
 class ReadOnlyOrEditor(BasePermission):
     """Any authenticated user may read; only editors and admins may write."""
 

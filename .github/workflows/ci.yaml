@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: ci-only-secret-key-not-used-anywhere-else
+      DEBUG: 'True'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'   # Django 6.1 requires Python 3.12 or newer
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Django system check
+        run: python manage.py check
+
+      - name: Fail if a model change is missing its migration
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Run the test suite
+        run: python manage.py test --settings=blog_api.settings_test

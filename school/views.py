@@ -1,6 +1,9 @@
 from django.conf import settings
 from django.db.models import Count, ProtectedError, Q
-from rest_framework import status, viewsets
+from django_filters.rest_framework import DjangoFilterBackend
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema
+from rest_framework import filters, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
@@ -42,6 +45,11 @@ MANAGER_ROLES = (Role.ADMIN, Role.EDITOR)
 ADMIN_ONLY = (Role.ADMIN,)
 
 
+# Shared by the school list endpoints: ?search=, ?ordering= and exact-match filters (review item C).
+# Each view still chooses *which* fields are searchable/filterable, so private data is never exposed.
+LIST_FILTER_BACKENDS = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+
+
 class ProtectedDeleteMixin:
     """A PROTECTed delete is a client conflict (409), not a server error (500)."""
 
@@ -58,6 +66,8 @@ class ProtectedDeleteMixin:
 class DepartmentViewSet(ProtectedDeleteMixin, viewsets.ModelViewSet):
     queryset = Department.objects.all().order_by("name")
     serializer_class = DepartmentSerializer
+    filter_backends = LIST_FILTER_BACKENDS
+    search_fields = ["name", "description"]
     permission_classes = [SchoolRolePermission]
     read_roles = ALL_ROLES
     write_roles = MANAGER_ROLES
@@ -69,6 +79,10 @@ class TeacherViewSet(viewsets.ModelViewSet):
         "department"
     ).all().order_by("last_name")
     serializer_class = TeacherSerializer
+    filter_backends = LIST_FILTER_BACKENDS
+    filterset_fields = ["department"]
+    search_fields = ["first_name", "last_name", "email"]
+    ordering_fields = ["last_name", "first_name"]
     permission_classes = [SchoolRolePermission]
     read_roles = STAFF_ROLES
     write_roles = MANAGER_ROLES
@@ -78,6 +92,10 @@ class TeacherViewSet(viewsets.ModelViewSet):
 class StudentViewSet(viewsets.ModelViewSet):
     queryset = Student.objects.all().order_by("last_name")
     serializer_class = StudentSerializer
+    filter_backends = LIST_FILTER_BACKENDS
+    # Only non-sensitive columns are searchable: filtering on phone/date of birth would leak them.
+    search_fields = ["first_name", "last_name", "admission_number"]
+    ordering_fields = ["last_name", "first_name", "admission_number"]
     permission_classes = [SchoolRolePermission]
     read_roles = STAFF_ROLES + (Role.STUDENT,)
     write_roles = MANAGER_ROLES
@@ -97,6 +115,10 @@ class CourseViewSet(viewsets.ModelViewSet):
         taken=Count("enrollments", filter=Q(enrollments__status=Enrollment.Status.ACTIVE)),
     ).order_by("code")
     serializer_class = CourseSerializer
+    filter_backends = LIST_FILTER_BACKENDS
+    filterset_fields = ["department", "teachers"]
+    search_fields = ["name", "code", "description", "department__name"]
+    ordering_fields = ["code", "name", "start_date", "fee"]
     permission_classes = [SchoolRolePermission]
     read_roles = ALL_ROLES
     write_roles = MANAGER_ROLES
@@ -154,6 +176,9 @@ class EnrollmentViewSet(viewsets.ModelViewSet):
         "course",
     ).all().order_by("-enrolled_on")
     serializer_class = EnrollmentSerializer
+    filter_backends = LIST_FILTER_BACKENDS
+    filterset_fields = ["course", "student", "status"]
+    ordering_fields = ["enrolled_on", "grade"]
     permission_classes = [EnrollmentPermission]
     read_roles = STAFF_ROLES + (Role.STUDENT,)
     write_roles = STAFF_ROLES  # teachers: grade updates on own courses only
@@ -182,6 +207,7 @@ class EnrollmentViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(enrollment).data)
 
 
+@extend_schema(request=StudentProfileSerializer, responses=StudentProfileSerializer)
 class StudentProfileView(APIView):
     """The signed-in user's own student profile: phone (for M-Pesa) and optional address."""
 
@@ -202,6 +228,7 @@ class StudentProfileView(APIView):
         return Response(serializer.data)
 
 
+@extend_schema(responses=OpenApiTypes.OBJECT)
 class SchoolInfoView(APIView):
     """The school's own details, plus the (public, referrer-restricted) Google Maps browser key."""
 
@@ -224,6 +251,7 @@ class SchoolInfoView(APIView):
         })
 
 
+@extend_schema(responses=OpenApiTypes.OBJECT)
 class TeacherMapView(APIView):
     """Pins for teachers who opted in. No emails or other personal details."""
 
@@ -244,6 +272,7 @@ class TeacherMapView(APIView):
         ])
 
 
+@extend_schema(responses=OpenApiTypes.OBJECT)
 class StudentMapView(APIView):
     """Student addresses are personal data, so managers only."""
 

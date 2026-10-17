@@ -1,12 +1,15 @@
 """School business rules: enrolling in a course and paying for it."""
+from datetime import timedelta
+
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 from accounts.emails import send_teacher_setup_email
 from accounts.models import User
 from payments import services as payment_services
 from payments.models import Payment
 
-from .models import Enrollment, Student
+from .models import Course, Enrollment, Student
 
 
 @transaction.atomic
@@ -41,6 +44,32 @@ class EnrollmentError(Exception):
     """A rule violation worth showing to the user as-is."""
 
 
+# How long an unpaid M-Pesa prompt keeps a seat reserved. It mirrors payments.services.GIVE_UP_AFTER:
+# after that the prompt is treated as timed out, so the seat goes back on sale.
+SEAT_HOLD = timedelta(minutes=10)
+
+
+def seats_in_use(course, *, excluding=None):
+    """
+    Seats that are unavailable to a new applicant (review fix B3): active enrollments plus
+    enrollments whose M-Pesa prompt is still live. Counting the second group closes the gap where
+    two people could both be told "pay now" for the last seat and both succeed.
+    ``excluding`` lets the applicant's own pending enrollment not block themselves.
+    """
+    from payments.models import Payment
+
+    held = course.enrollments.filter(
+        status=Enrollment.Status.PENDING,
+        payment__status=Payment.Status.PENDING,
+        payment__created_at__gte=timezone.now() - SEAT_HOLD,
+    )
+    taken = course.enrollments.filter(status=Enrollment.Status.ACTIVE)
+    if excluding is not None:
+        held = held.exclude(pk=excluding.pk)
+        taken = taken.exclude(pk=excluding.pk)
+    return taken.count() + held.count()
+
+
 def start_enrollment(user, course):
     """
     Get (or create) the user's enrollment in a course. Returns (enrollment, needs_payment).
@@ -50,10 +79,14 @@ def start_enrollment(user, course):
     existing = Enrollment.objects.filter(student=student, course=course).first()
     if existing and existing.is_active:
         raise EnrollmentError('You are already enrolled in this course.')
-    if course.is_full:
-        raise EnrollmentError('Sorry, this course is full.')
 
     with transaction.atomic():
+        # Review fix B3: lock the course row so concurrent applicants are checked one at a time.
+        # (SQLite ignores row locks; PostgreSQL honours them, which is where this matters.)
+        course = Course.objects.select_for_update().get(pk=course.pk)
+        if course.capacity is not None and seats_in_use(course, excluding=existing) >= course.capacity:
+            raise EnrollmentError('Sorry, this course is full.')
+
         try:
             enrollment, _ = Enrollment.objects.select_for_update().get_or_create(
                 student=student, course=course, defaults={'status': Enrollment.Status.PENDING},

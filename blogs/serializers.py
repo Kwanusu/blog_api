@@ -15,6 +15,10 @@ class AuthorSerializer(serializers.ModelSerializer):
 class BlogSerializer(serializers.ModelSerializer):
     author_name = serializers.StringRelatedField(source='author', read_only=True)
     image = CloudinaryImageField(required=False, allow_null=True)
+    # Explicit default so a post stays published when the field is omitted. This matters for HTML
+    # form / multipart requests (such as image uploads), where DRF otherwise reads a missing
+    # boolean as False and would silently turn every upload into a draft (review fix A2).
+    is_published = serializers.BooleanField(required=False, default=True)
     locked = serializers.SerializerMethodField()
     tips_total = serializers.SerializerMethodField()
     tips_count = serializers.SerializerMethodField()
@@ -23,7 +27,7 @@ class BlogSerializer(serializers.ModelSerializer):
         model = Blog
         fields = [
             'id', 'title', 'text', 'author', 'author_name', 'published_date', 'created_at', 'image',
-            'is_premium', 'locked', 'tips_total', 'tips_count',
+            'is_published', 'is_premium', 'locked', 'tips_total', 'tips_count',
         ]
 
     # ── paywall ──────────────────────────────────────────────────────────────
@@ -48,7 +52,7 @@ class BlogSerializer(serializers.ModelSerializer):
             return False
         return not self._viewer_is_member()
 
-    def get_locked(self, blog):
+    def get_locked(self, blog) -> bool:
         return self._is_locked(blog)
 
     def to_representation(self, instance):
@@ -59,14 +63,14 @@ class BlogSerializer(serializers.ModelSerializer):
         return data
 
     # ── tips (annotated by the view; falls back to a query for single objects) ─────
-    def get_tips_total(self, blog):
+    def get_tips_total(self, blog) -> int:
         total = getattr(blog, 'tips_total', None)
         if total is None:
             from django.db.models import Sum
             total = blog.tips.filter(status='paid').aggregate(t=Sum('amount'))['t'] or 0
         return int(total)
 
-    def get_tips_count(self, blog):
+    def get_tips_count(self, blog) -> int:
         count = getattr(blog, 'tips_count', None)
         return blog.tips.filter(status='paid').count() if count is None else count
 
@@ -102,7 +106,7 @@ class MembershipPlanSerializer(serializers.ModelSerializer):
         model = MembershipPlan
         fields = ['id', 'name', 'description', 'price', 'duration_days']
 
-    def get_price(self, plan):
+    def get_price(self, plan) -> int:
         return int(plan.price)
 
 

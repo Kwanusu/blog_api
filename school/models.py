@@ -128,6 +128,14 @@ class Enrollment(models.Model):
         ACTIVE = 'active', 'Enrolled'
         CANCELLED = 'cancelled', 'Cancelled'
 
+    class Grade(models.TextChoices):
+        """Allowed grades (review fix C). An empty string means "not graded yet"."""
+        A = 'A', 'A'
+        B = 'B', 'B'
+        C = 'C', 'C'
+        D = 'D', 'D'
+        E = 'E', 'E'
+
     student = models.ForeignKey(
         Student,
         on_delete=models.CASCADE,
@@ -139,7 +147,8 @@ class Enrollment(models.Model):
         related_name="enrollments",
     )
     enrolled_on = models.DateField(auto_now_add=True)
-    grade = models.CharField(max_length=2, blank=True)
+    # Previously free text; restricting it to A-E stops typos such as "a+" or "10" being stored.
+    grade = models.CharField(max_length=2, blank=True, choices=Grade.choices)
     # Enrollments created by staff (and every row that existed before payments) are active; self-service
     # enrolment in a paid course starts as "pending" until its M-Pesa payment succeeds.
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE, db_index=True)

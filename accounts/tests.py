@@ -264,6 +264,8 @@ class ApiProtectionTests(APITestCase):
         'RegisterView', 'ForgotPasswordView', 'ResetPasswordView',
         'GoogleLoginView', 'LoginView', 'RefreshView',
         'MpesaCallbackView',   # Safaricom has no token; the secret in its URL is the gate
+        # API docs: open only while DEBUG is on; staff-only otherwise (SPECTACULAR_SETTINGS['SERVE_PERMISSIONS']).
+        'SpectacularAPIView', 'SpectacularSwaggerView',
     }
 
     def setUp(self):

@@ -6,6 +6,7 @@ from django.core.validators import MinValueValidator
 from django.db import models
 from django.utils import timezone
 
+
 class Author(models.Model):
     # Links an author profile to a login; used for "edit own blogs" permissions.
     user = models.OneToOneField(
@@ -19,6 +20,11 @@ class Author(models.Model):
     last_name = models.CharField(max_length=100)
     email = models.EmailField()
 
+    class Meta:
+        # Review fix C: a default ordering makes paginated author lists deterministic
+        # (without it the database may return rows in any order and pages can overlap).
+        ordering = ['last_name', 'first_name', 'id']
+
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
 
@@ -26,9 +32,16 @@ class Blog(models.Model):
     title = models.CharField(max_length=255)
     text = models.TextField()
     author = models.ForeignKey(Author, on_delete=models.CASCADE)
-    published_date = models.DateField()
+    # Indexed because it is the default sort key of the blog list (review fix C).
+    published_date = models.DateField(db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    is_published = models.BooleanField(default=False)
+    # Review fix A2: drafts are opt-in. The flag now controls visibility in the API
+    # (see BlogViewSet.get_queryset); it defaults to True so clients that never send it keep
+    # publishing immediately, and a draft is created with ``"is_published": false``.
+    is_published = models.BooleanField(
+        default=True,
+        help_text='Unpublished posts (drafts) are visible only to their author, editors and admins.',
+    )
     image = CloudinaryField('image', folder='blogs', null=True, blank=True)
     is_premium = models.BooleanField(default=False, help_text='Only members (and the author) can read the full text.')
 

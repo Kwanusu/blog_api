@@ -25,6 +25,19 @@ class RegisterSerializer(serializers.ModelSerializer):
         fields = ['id', 'email', 'first_name', 'last_name', 'password', 'role']
         read_only_fields = ['id', 'role']
 
+    def validate_email(self, value):
+        """
+        Reject an address that is already registered in any letter case.
+
+        Review fix B2: the default ``unique=True`` validator compares exactly, so ``Ann@x.com``
+        used to be accepted next to ``ann@x.com``. Answering 400 here (rather than letting the
+        case-insensitive database constraint raise) keeps the error friendly.
+        """
+        value = value.strip().lower()
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError('A user with that email address already exists.')
+        return value
+
     def validate_password(self, value):
         validate_password(value)
         return value

@@ -17,3 +17,8 @@ class Command(BaseCommand):
             if not services.reconcile(payment, force=True).is_pending:
                 settled += 1
         self.stdout.write(self.style.SUCCESS(f'Checked {pending.count()} pending payment(s); settled {settled}.'))
+
+        # Housekeeping: rows whose STK request never left this server (see services.expire_orphans).
+        closed = services.expire_orphans()
+        if closed:
+            self.stdout.write(f'Closed {closed} payment(s) that were never sent to Safaricom.')

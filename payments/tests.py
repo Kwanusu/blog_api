@@ -316,3 +316,33 @@ class SimulatorTests(TestCase):
 
     def test_phone_ending_999_simulates_a_cancelled_prompt(self):
         self.assertEqual(services.reconcile(self.pay('0712345999')).status, Payment.Status.CANCELLED)
+
+
+class ExpireOrphansTests(TestCase):
+    """Review item B (payments): a Payment saved but never sent to Daraja must not stay pending forever."""
+
+    def make(self, minutes_old, checkout=None):
+        payment = Payment.objects.create(
+            phone='254712345678', amount=100, purpose=Payment.Purpose.TIP, checkout_request_id=checkout)
+        Payment.objects.filter(pk=payment.pk).update(created_at=timezone.now() - timedelta(minutes=minutes_old))
+        return payment
+
+    def test_old_unsent_payments_are_failed_and_recent_or_sent_ones_are_left_alone(self):
+        old_orphan = self.make(11)
+        young_orphan = self.make(2)
+        sent = self.make(30, checkout='ws_CO_SENT')
+        self.assertEqual(services.expire_orphans(), 1)
+        for payment in (old_orphan, young_orphan, sent):
+            payment.refresh_from_db()
+        self.assertEqual(old_orphan.status, Payment.Status.FAILED)
+        self.assertEqual(young_orphan.status, Payment.Status.PENDING)
+        self.assertEqual(sent.status, Payment.Status.PENDING)
+
+    def test_the_reconcile_command_runs_the_cleanup(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+        orphan = self.make(15)
+        call_command('mpesa_reconcile', stdout=StringIO())
+        orphan.refresh_from_db()
+        self.assertEqual(orphan.status, Payment.Status.FAILED)
