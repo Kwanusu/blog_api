@@ -1,20 +1,14 @@
 # Render Blueprint: https://render.com/docs/blueprint-spec
-# In the Render dashboard choose New > Blueprint, pick this repo, and Render creates the web service
-# and the PostgreSQL database below. Variables marked "sync: false" are prompted for on first setup
-# and are never stored in git.
-
-databases:
-  - name: blog-api-db
-    plan: free
-    databaseName: test_db_p2lv
-    user: blog_api
+# In the Render dashboard choose New > Blueprint and pick this repo. Render creates the web service
+# below; it uses your EXISTING Render PostgreSQL database (paste its URL into DATABASE_URL when
+# prompted). Variables marked "sync: false" are prompted for on first setup and never stored in git.
 
 services:
   - type: web
     name: blog-api
     runtime: python
     plan: free
-    region: frankfurt
+    region: frankfurt   # must match your database's region
     branch: main
     buildCommand: bash build.sh
     startCommand: gunicorn blog_api.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 60
@@ -31,10 +25,10 @@ services:
         value: "False"
       - key: DB_BACKEND
         value: postgres
+      # Existing database: Render dashboard > your database > Connect > "Internal Database URL".
+      # The internal URL only works when this service is in the SAME region as the database.
       - key: DATABASE_URL
-        fromDatabase:
-          name: blog-api-db
-          property: connectionString
+        sync: false
       # Render terminates HTTPS at its proxy and forwards X-Forwarded-Proto.
       - key: BEHIND_PROXY
         value: "True"
