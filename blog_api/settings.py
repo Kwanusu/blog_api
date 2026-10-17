@@ -116,23 +116,23 @@ WSGI_APPLICATION = 'blog_api.wsgi.application'
 # It is an explicit switch (not "use DATABASE_URL whenever it exists") so a stale DATABASE_URL left in
 # .env can never silently redirect a classroom machine to a remote database. PostgreSQL also needs the
 # driver installed: pip install "psycopg[binary]".
+import dj_database_url
+
 DB_BACKEND = config('DB_BACKEND', default='sqlite').strip().lower()
 
 if DB_BACKEND == 'postgres':
-    from urllib.parse import unquote, urlparse
-
-    _db = urlparse(config('DATABASE_URL'))
     DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': _db.path.lstrip('/'),
-            'USER': unquote(_db.username or ''),
-            'PASSWORD': unquote(_db.password or ''),
-            'HOST': _db.hostname or '',
-            'PORT': _db.port or '',
-            'CONN_MAX_AGE': config('DB_CONN_MAX_AGE', default=60, cast=int),   # reuse connections
-        }
+        'default': dj_database_url.parse(
+            config('DATABASE_URL'),
+            conn_max_age=config(
+                'DB_CONN_MAX_AGE',
+                default=60,
+                cast=int,
+            ),
+            conn_health_checks=True,
+        )
     }
+
 elif DB_BACKEND == 'sqlite':
     DATABASES = {
         'default': {
@@ -140,8 +140,11 @@ elif DB_BACKEND == 'sqlite':
             'NAME': BASE_DIR / 'db.sqlite3',
         }
     }
+
 else:
-    raise ImproperlyConfigured("DB_BACKEND must be 'sqlite' or 'postgres'.")
+    raise ImproperlyConfigured(
+        "DB_BACKEND must be 'sqlite' or 'postgres'."
+    )
 
 # Review fix A5: one explicit primary-key type for every app. Without it, migrations generated under
 # different Django versions disagreed (AutoField vs BigAutoField) and `makemigrations` always found
