@@ -6,7 +6,7 @@
 databases:
   - name: blog-api-db
     plan: free
-    databaseName: blog_api
+    databaseName: test_db_p2lv
     user: blog_api
 
 services:
