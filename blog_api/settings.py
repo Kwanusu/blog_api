@@ -86,7 +86,12 @@ CORS_ALLOWED_ORIGINS = config(
 FRONTEND_ORIGINS = ["https://blog-app-lime-three.vercel.app"]
 CORS_ALLOWED_ORIGINS = list(dict.fromkeys(CORS_ALLOWED_ORIGINS + FRONTEND_ORIGINS))
 
-CSRF_TRUSTED_ORIGINS = FRONTEND_ORIGINS
+# Vercel preview/deployment URLs of this project (blog-<hash>-kwanusu-josephs-projects.vercel.app).
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https://blog-[a-z0-9]+-kwanusu-josephs-projects\.vercel\.app$",
+]
+
+CSRF_TRUSTED_ORIGINS = FRONTEND_ORIGINS + ["https://*-kwanusu-josephs-projects.vercel.app"]
 ALLOWED_HOSTS = ["blog-api-1jy4.onrender.com", "localhost"]
 # Serves collected static files (admin CSS/JS) in production without a separate web server.
 # Added only when DEBUG is off: runserver already serves static files in development, and WhiteNoise
