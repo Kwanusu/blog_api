@@ -72,6 +72,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'blog_api.middleware.RequestTimingMiddleware',
 ]
 
 CORS_ALLOWED_ORIGINS = config(
@@ -80,6 +81,13 @@ CORS_ALLOWED_ORIGINS = config(
    cast=lambda v: [o.strip() for o in v.split(',') if o.strip()],
 )
 
+# The deployed frontend (Vercel). Always allowed, so sign-in keeps working even if the
+# CORS_ALLOWED_ORIGINS variable on Render is missing or only lists localhost.
+FRONTEND_ORIGINS = ["https://blog-app-lime-three.vercel.app"]
+CORS_ALLOWED_ORIGINS = list(dict.fromkeys(CORS_ALLOWED_ORIGINS + FRONTEND_ORIGINS))
+
+CSRF_TRUSTED_ORIGINS = FRONTEND_ORIGINS
+ALLOWED_HOSTS = ["blog-api-1jy4.onrender.com", "localhost"]
 # Serves collected static files (admin CSS/JS) in production without a separate web server.
 # Added only when DEBUG is off: runserver already serves static files in development, and WhiteNoise
 # would just warn that `staticfiles/` has not been collected yet. It must sit directly after
@@ -117,6 +125,15 @@ WSGI_APPLICATION = 'blog_api.wsgi.application'
 # .env can never silently redirect a classroom machine to a remote database. PostgreSQL also needs the
 # driver installed: pip install "psycopg[binary]".
 import dj_database_url
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "loggers": {
+        "blog_api": {"handlers": ["console"], "level": "INFO"}
+    }
+}
 
 DB_BACKEND = config('DB_BACKEND', default='sqlite').strip().lower()
 

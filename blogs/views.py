@@ -43,7 +43,7 @@ class AuthorViewSet(viewsets.ModelViewSet):
 
 
 class BlogViewSet(viewsets.ModelViewSet):
-    permission_classes = [BlogPermission]
+    permission_classes = [ReadOnlyOrEditor]
     throttle_classes = [UserRateThrottle, AnonRateThrottle]
     throttle_scope = None   # set per-action (@action(throttle_scope=...)); DRF needs the attribute to exist
     queryset = Blog.objects.select_related('author').annotate(

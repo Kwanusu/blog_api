@@ -1,5 +1,5 @@
 from datetime import timedelta
-
+from django.utils.text import slugify
 from cloudinary.models import CloudinaryField
 from django.conf import settings
 from django.core.validators import MinValueValidator
@@ -19,6 +19,8 @@ class Author(models.Model):
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100)
     email = models.EmailField()
+    
+  
 
     class Meta:
         # Review fix C: a default ordering makes paginated author lists deterministic
@@ -31,19 +33,25 @@ class Author(models.Model):
 class Blog(models.Model):
     title = models.CharField(max_length=255)
     text = models.TextField()
-    author = models.ForeignKey(Author, on_delete=models.CASCADE)
-    # Indexed because it is the default sort key of the blog list (review fix C).
+    author = models.ForeignKey(settings.AUTH_USER_MODEL,
+                               on_delete=models.CASCADE,
+                               related_name='blogs')
     published_date = models.DateField(db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    # Review fix A2: drafts are opt-in. The flag now controls visibility in the API
-    # (see BlogViewSet.get_queryset); it defaults to True so clients that never send it keep
-    # publishing immediately, and a draft is created with ``"is_published": false``.
+
     is_published = models.BooleanField(
         default=True,
         help_text='Unpublished posts (drafts) are visible only to their author, editors and admins.',
     )
+    slug = models.SlugField(blank=True)
     image = CloudinaryField('image', folder='blogs', null=True, blank=True)
     is_premium = models.BooleanField(default=False, help_text='Only members (and the author) can read the full text.')
+    
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            self.slug = slugify(self.title)
+            
+        super().save(*args, **kwargs)  
 
     def __str__(self):
         return self.title

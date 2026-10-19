@@ -30,10 +30,10 @@ def fake_upload(file, **options):
 
 class CloudinaryImageTests(APITestCase):
     @classmethod
-    def setUpTestData(cls):
-        cls.admin = User.objects.create_user('admin@x.com', 'pw-Strong-123', role=User.Role.ADMIN)
-        cls.author = Author.objects.create(first_name='A', last_name='B', email='ab@x.com')
-        cls.dept = Department.objects.create(name='Science')
+    def setUpTestData(self):
+        self.admin = User.objects.create_user('admin@x.com', 'pw-Strong-123', role=User.Role.ADMIN)
+        self.author = Author.objects.create(first_name='A', last_name='B', email='ab@x.com')
+        self.dept = Department.objects.create(name='Science')
 
     def setUp(self):
         cloudinary.config(cloud_name='demo', secure=True)
